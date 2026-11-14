@@ -1,0 +1,5 @@
+# Uses Ubuntu standard system packages:
+# - python3-gi
+# - libgtk-4-1
+# Zero pip packages required! Runs purely on native GTK4 & Python 3.
+
