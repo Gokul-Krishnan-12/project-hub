@@ -793,11 +793,13 @@ class ProjectManager:
 
             # 2. Run stop command
             actual_cmd = cmd_str
-            # Safeguard: Never execute blanket 'pkill -f node' because it kills VS Code's internal Pty Host,
-            # extension host, and terminals. Scope it strictly to this project's port or directory.
-            if actual_cmd.strip() in ["pkill -f node", "pkill -f 'node'", "pkill -f \"node\""]:
-                proj = next((p for p in self.projects if p.get("id") == proj_id), None)
-                port = self.extract_port(proj.get("url", "")) if proj else None
+            proj = next((p for p in self.projects if p.get("id") == proj_id), None)
+            port = self.extract_port(proj.get("url", "")) if proj else None
+
+            # Safeguard: Never execute blanket 'pkill -f node' or 'killall node' because it kills
+            # VS Code's internal Pty Host, extension hosts, and other unrelated projects.
+            # Scope it strictly to this project's port or directory.
+            if re.search(r'\b(pkill|killall)\s+.*?\bnode\b', actual_cmd):
                 if port:
                     actual_cmd = f"fuser -k {port}/tcp"
                 elif cwd:
@@ -824,6 +826,16 @@ class ProjectManager:
                 log_lines.append(f"Executed: {actual_cmd}")
             except Exception as e:
                 log_lines.append(f"Stop command warning: {e}")
+
+            # 3. Targeted cleanup: if port is still listening, stop ONLY processes belonging to THIS project
+            if port and self.is_port_listening(port) and proj:
+                pids = self.get_pids_on_port(port)
+                for pid in pids:
+                    if self.matches_project_process(proj, [pid]):
+                        try:
+                            os.kill(pid, signal.SIGTERM)
+                        except Exception:
+                            pass
 
             self.logs_cache[proj_id] = "\n".join(log_lines[-200:])
             time.sleep(1.0)

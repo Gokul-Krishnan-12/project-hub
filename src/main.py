@@ -2597,12 +2597,13 @@ class CommandCenterWindow(Gtk.ApplicationWindow):
         elif "package.json" in files:
             if not info["run_cmd"]:
                 info["run_cmd"] = "npm run dev"
-            if not info["stop_cmd"]:
-                info["stop_cmd"] = "pkill -f node"
-            if not info["build_cmd"]:
-                info["build_cmd"] = "npm run build"
             if not info["url"]:
                 info["url"] = "http://localhost:3000"
+            if not info["stop_cmd"]:
+                folder_name = p.name
+                info["stop_cmd"] = f"pkill -f '{folder_name}'"
+            if not info["build_cmd"]:
+                info["build_cmd"] = "npm run build"
 
         return info
 
