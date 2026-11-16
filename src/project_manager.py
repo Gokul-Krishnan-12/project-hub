@@ -615,6 +615,31 @@ class ProjectManager:
         """Backward compatibility alias for execute_stack_action"""
         self.execute_stack_action(group_name, action, on_done_callback)
 
+    def get_execution_env(self):
+        """Builds a rich execution environment that includes NVM (node/npm), ~/.local/bin, cargo, and system PATH."""
+        env = os.environ.copy()
+        extra_paths = []
+
+        # 1. Check ~/.nvm/versions/node
+        nvm_node_root = Path.home() / ".nvm" / "versions" / "node"
+        if nvm_node_root.exists():
+            versions = sorted(nvm_node_root.glob("v*"), reverse=True)
+            if versions:
+                extra_paths.append(str(versions[0] / "bin"))
+
+        # 2. Check ~/.local/bin and ~/.cargo/bin
+        extra_paths.append(str(Path.home() / ".local" / "bin"))
+        extra_paths.append(str(Path.home() / ".cargo" / "bin"))
+
+        # Merge with existing PATH
+        current_paths = [p for p in env.get("PATH", "").split(":") if p]
+        for ep in reversed(extra_paths):
+            if ep not in current_paths:
+                current_paths.insert(0, ep)
+
+        env["PATH"] = ":".join(current_paths)
+        return env
+
     def _start_service_async(self, proj_id, name, cmd_str, cwd, callback, open_vscode=False):
         def worker():
             log_lines = [f"=== Starting {name} ==="]
@@ -630,13 +655,14 @@ class ProjectManager:
                 proc = subprocess.Popen(
                     cmd_str,
                     shell=True,
+                    executable="/bin/bash",
                     cwd=cwd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
                     bufsize=1,
                     preexec_fn=os.setsid,
-                    env=os.environ.copy()
+                    env=self.get_execution_env()
                 )
                 self.active_processes[proj_id] = proc
                 
@@ -692,11 +718,12 @@ class ProjectManager:
                 subprocess.run(
                     actual_cmd,
                     shell=True,
+                    executable="/bin/bash",
                     cwd=cwd,
                     timeout=30,
                     capture_output=True,
                     text=True,
-                    env=os.environ.copy()
+                    env=self.get_execution_env()
                 )
                 log_lines.append(f"Executed: {actual_cmd}")
             except Exception as e:
@@ -717,13 +744,14 @@ class ProjectManager:
                 proc = subprocess.Popen(
                     cmd_str,
                     shell=True,
+                    executable="/bin/bash",
                     cwd=cwd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
                     bufsize=1,
                     preexec_fn=os.setsid,
-                    env=os.environ.copy()
+                    env=self.get_execution_env()
                 )
                 self.active_processes[proj_id] = proc
                 
