@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 import socket
+import re
 from urllib.parse import urlparse
 from pathlib import Path
 
@@ -480,6 +481,67 @@ class ProjectManager:
         except Exception:
             return []
 
+    def get_pids_on_port(self, port):
+        """Returns list of PIDs listening on the given TCP port"""
+        if not port:
+            return []
+        pids = []
+        try:
+            res = subprocess.run(
+                ["lsof", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+                capture_output=True, text=True, timeout=0.8
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                for line in res.stdout.strip().splitlines():
+                    if line.strip().isdigit():
+                        pids.append(int(line.strip()))
+        except Exception:
+            pass
+
+        if not pids:
+            try:
+                res = subprocess.run(
+                    ["ss", "-lptn", f"sport = :{port}"],
+                    capture_output=True, text=True, timeout=0.8
+                )
+                for m in re.finditer(r"pid=(\d+)", res.stdout):
+                    pids.append(int(m.group(1)))
+            except Exception:
+                pass
+        return list(set(pids))
+
+    def get_process_cwd_and_cmd(self, pid):
+        """Get cwd Path and cmdline string for a PID"""
+        cwd_path = None
+        cmdline = ""
+        try:
+            target = os.readlink(f"/proc/{pid}/cwd")
+            cwd_path = Path(target).resolve()
+        except Exception:
+            pass
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmdline = f.read().decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+        return cwd_path, cmdline
+
+    def matches_project_process(self, proj, pids):
+        """Checks if any of the given PIDs match the project's directory or cmdline"""
+        proj_path = self.resolve_path(proj.get("path", "")).resolve()
+        for pid in pids:
+            cwd, cmd = self.get_process_cwd_and_cmd(pid)
+            if cwd:
+                try:
+                    if cwd == proj_path or cwd.is_relative_to(proj_path):
+                        return True
+                except Exception:
+                    if str(proj_path) in str(cwd):
+                        return True
+            if cmd and str(proj_path) in cmd:
+                return True
+        return False
+
     def check_status(self, proj):
         """Accurately determines if the service is currently running"""
         proj_id = proj.get("id")
@@ -497,6 +559,30 @@ class ProjectManager:
         if port:
             # A. Check if the port is actively listening/responding locally
             if self.is_port_listening(port):
+                pids = self.get_pids_on_port(port)
+                if pids:
+                    # Check if any listening PID directly belongs to this project
+                    if self.matches_project_process(proj, pids):
+                        return "RUNNING"
+
+                    # Check if the process belongs to ANOTHER configured project in projects list
+                    for other in self.projects:
+                        if other.get("id") != proj_id:
+                            if self.matches_project_process(other, pids):
+                                return "STOPPED"
+
+                    # If multiple projects share this exact port, and this project didn't match, return STOPPED
+                    shared_count = sum(1 for p in self.projects if self.extract_port(p.get("url", "")) == port)
+                    if shared_count > 1:
+                        return "STOPPED"
+
+                # Check if published by a running docker container
+                port_pattern = f":{port}->"
+                for cname, cports in running_containers:
+                    if port_pattern in cports:
+                        return "RUNNING"
+
+                # If single project configured with this port, return RUNNING
                 return "RUNNING"
 
             # B. Check if any running container has published this exact port (e.g. ':8000->' or ':8002->')

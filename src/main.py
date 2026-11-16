@@ -1226,7 +1226,15 @@ class CommandCenterWindow(Gtk.ApplicationWindow):
         if url:
             url_btn = Gtk.Button(label=f"{url} ↗")
             url_btn.add_css_class("btn-open-url")
-            url_btn.set_tooltip_text(f"Open {url} in Browser")
+            port = self.proj_mgr.extract_port(url)
+            shared_with = [
+                p.get("name") for p in self.proj_mgr.projects
+                if p.get("id") != pid and self.proj_mgr.extract_port(p.get("url", "")) == port
+            ] if port else []
+            if shared_with:
+                url_btn.set_tooltip_text(f"Open {url} in Browser (⚠️ Shared port {port} with: {', '.join(shared_with)})")
+            else:
+                url_btn.set_tooltip_text(f"Open {url} in Browser")
             url_btn.connect("clicked", lambda _, u=url: self.open_browser(u))
             row1.append(url_btn)
 
@@ -2042,6 +2050,31 @@ class CommandCenterWindow(Gtk.ApplicationWindow):
         if item_data.get("url"):
             url_entry.set_text(item_data.get("url"))
         box.append(url_entry)
+
+        conflict_lbl = Gtk.Label(xalign=0)
+        conflict_lbl.set_wrap(True)
+        conflict_lbl.set_visible(False)
+        box.append(conflict_lbl)
+
+        def check_port_conflict():
+            text = url_entry.get_text().strip()
+            port = self.proj_mgr.extract_port(text)
+            current_id = item_data.get("id")
+            if port:
+                conflicting = [
+                    p.get("name") for p in self.proj_mgr.get_projects()
+                    if p.get("id") != current_id and self.proj_mgr.extract_port(p.get("url", "")) == port
+                ]
+                if conflicting:
+                    conflict_lbl.set_markup(
+                        f"<small><span foreground='#f59e0b'>⚠️ Port {port} is also used by <b>{', '.join(conflicting)}</b>. To run both concurrently, assign a distinct port (e.g. {port + 1}).</span></small>"
+                    )
+                    conflict_lbl.set_visible(True)
+                    return
+            conflict_lbl.set_visible(False)
+
+        url_entry.connect("changed", lambda _: check_port_conflict())
+        check_port_conflict()
         
         # 5. Run Command
         box.append(Gtk.Label(label="Run Command:", xalign=0))
