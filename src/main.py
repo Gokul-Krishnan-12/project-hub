@@ -2614,15 +2614,28 @@ class CommandCenterWindow(Gtk.ApplicationWindow):
 class CommandCenterApp(Gtk.Application):
     def __init__(self):
         super().__init__(application_id="com.github.touchpad.commandcenter")
+        self.css_loaded = False
+
+    def load_css(self):
+        if not self.css_loaded:
+            provider = Gtk.CssProvider()
+            provider.load_from_data(CSS.encode('utf-8'))
+            Gtk.StyleContext.add_provider_for_display(
+                Gdk.Display.get_default(),
+                provider,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            )
+            self.css_loaded = True
 
     def do_activate(self):
-        provider = Gtk.CssProvider()
-        provider.load_from_data(CSS.encode('utf-8'))
-        Gtk.StyleContext.add_provider_for_display(
-            Gdk.Display.get_default(),
-            provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-        )
+        self.load_css()
+        windows = self.get_windows()
+        if windows:
+            win = windows[0]
+            win.present()
+            win.refresh_all(silent=True)
+            return
+
         win = CommandCenterWindow(self)
         win.present()
 
