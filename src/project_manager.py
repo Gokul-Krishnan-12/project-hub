@@ -11,6 +11,8 @@ import json
 import subprocess
 import threading
 import time
+import socket
+from urllib.parse import urlparse
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".config" / "project-hub"
@@ -428,49 +430,120 @@ class ProjectManager:
         self.projects = [p for p in self.projects if p.get("id") != proj_id]
         self.save_projects()
 
+    def extract_port(self, url):
+        """Extracts integer port from URL or returns None"""
+        if not url:
+            return None
+        try:
+            if "://" not in url:
+                url = "http://" + url
+            parsed = urlparse(url)
+            if parsed.port:
+                return int(parsed.port)
+            if parsed.scheme == "https":
+                return 443
+            if parsed.scheme == "http":
+                return 80
+        except Exception:
+            pass
+        return None
+
+    def is_port_listening(self, port, timeout=0.08):
+        """Check if a local port is listening on 127.0.0.1, ::1, or 0.0.0.0"""
+        if not port:
+            return False
+        for host in ("127.0.0.1", "::1", "0.0.0.0"):
+            try:
+                with socket.create_connection((host, int(port)), timeout=timeout):
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def get_running_containers(self):
+        """Get list of (name, ports) for currently running Docker containers"""
+        try:
+            res = subprocess.run(
+                ["docker", "ps", "--format", "{{.Names}}\t{{.Ports}}"],
+                capture_output=True, text=True, timeout=1.5
+            )
+            containers = []
+            if res.returncode == 0 and res.stdout.strip():
+                for line in res.stdout.strip().splitlines():
+                    if not line.strip():
+                        continue
+                    parts = line.split("\t", 1)
+                    c_name = parts[0].strip()
+                    c_ports = parts[1].strip() if len(parts) > 1 else ""
+                    containers.append((c_name, c_ports))
+            return containers
+        except Exception:
+            return []
+
     def check_status(self, proj):
-        """Determines if the service is currently running"""
+        """Accurately determines if the service is currently running"""
         proj_id = proj.get("id")
-        
-        # 1. Check if we have an active live process
+
+        # 1. Active spawned live process from this launcher
         proc = self.active_processes.get(proj_id)
         if proc and proc.poll() is None:
             return "RUNNING"
 
-        proj_path = self.resolve_path(proj.get("path", ""))
+        url = proj.get("url", "")
+        port = self.extract_port(url)
+        running_containers = self.get_running_containers()
 
-        # 2. Check docker-compose running status in directory
-        if proj_path.exists():
-            try:
-                res = subprocess.run(
-                    ["docker-compose", "ps", "--status", "running", "-q"],
-                    cwd=str(proj_path), capture_output=True, text=True, timeout=1.5
-                )
-                if res.returncode == 0 and res.stdout.strip():
-                    return "RUNNING"
-            except Exception:
-                pass
-            try:
-                res = subprocess.run(
-                    ["docker", "compose", "ps", "--status", "running", "-q"],
-                    cwd=str(proj_path), capture_output=True, text=True, timeout=1.5
-                )
-                if res.returncode == 0 and res.stdout.strip():
-                    return "RUNNING"
-            except Exception:
-                pass
-
-        # 3. Check docker container name match
-        pname = proj.get("name", "").lower().replace(" ", "")
-        try:
-            res = subprocess.run(
-                ["docker", "ps", "--filter", f"name={pname}", "--filter", "status=running", "-q"],
-                capture_output=True, text=True, timeout=1.5
-            )
-            if res.returncode == 0 and res.stdout.strip():
+        # 2. If the project defines a web URL with a port, verify the port or published container port
+        if port:
+            # A. Check if the port is actively listening/responding locally
+            if self.is_port_listening(port):
                 return "RUNNING"
-        except Exception:
-            pass
+
+            # B. Check if any running container has published this exact port (e.g. ':8000->' or ':8002->')
+            port_pattern = f":{port}->"
+            for cname, cports in running_containers:
+                if port_pattern in cports:
+                    return "RUNNING"
+
+            # The port is closed and not published by any container -> definitely STOPPED
+            return "STOPPED"
+
+        # 3. For services without a URL or port (e.g. background databases, worker queues)
+        # Check running containers by exact matching name or ID
+        valid_names = {
+            proj_id.lower(),
+            proj.get("name", "").lower(),
+            proj.get("name", "").lower().replace(" ", ""),
+            proj.get("name", "").lower().replace(" ", "-"),
+            f"{proj_id.lower()}-dev",
+            f"{proj_id.lower()}-1",
+        }
+        for cname, cports in running_containers:
+            if cname.lower() in valid_names:
+                return "RUNNING"
+
+        # 4. Check docker-compose running services if a compose file exists in directory
+        proj_path = self.resolve_path(proj.get("path", ""))
+        if proj_path.exists() and (
+            (proj_path / "docker-compose.yml").exists()
+            or (proj_path / "docker-compose.yaml").exists()
+        ):
+            try:
+                res = subprocess.run(
+                    ["docker-compose", "ps", "--services", "--filter", "status=running"],
+                    cwd=str(proj_path), capture_output=True, text=True, timeout=1.5
+                )
+                if res.returncode == 0:
+                    running_services = [
+                        s.strip()
+                        for s in res.stdout.strip().splitlines()
+                        if s.strip()
+                        and s.strip().lower() not in ["mercure", "mailhog", "redis"]
+                    ]
+                    if running_services:
+                        return "RUNNING"
+            except Exception:
+                pass
 
         return "STOPPED"
 

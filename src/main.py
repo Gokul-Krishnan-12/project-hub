@@ -610,6 +610,7 @@ class CommandCenterWindow(Gtk.ApplicationWindow):
         
         self.build_ui()
         self.refresh_all()
+        GLib.timeout_add_seconds(3, self.on_heartbeat_tick)
 
     def build_ui(self):
         main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -841,12 +842,20 @@ class CommandCenterWindow(Gtk.ApplicationWindow):
     def set_status(self, text):
         GLib.idle_add(lambda: self.status_msg.set_text(text))
 
-    def refresh_all(self):
-        self.set_status("Scanning services & containers...")
+    def on_heartbeat_tick(self):
+        if self.get_visible() and not self.in_progress:
+            self.refresh_all(silent=True)
+        return True
+
+    def refresh_all(self, silent=False):
+        if not silent:
+            self.set_status("Scanning services & containers...")
         def worker():
             projects = self.proj_mgr.projects
             combined = []
             running_cnt = 0
+            changed = False
+            old_states = {it.get("id"): it.get("is_running") for it in self.unified_items}
             
             for p in projects:
                 status = self.proj_mgr.check_status(p)
@@ -856,17 +865,27 @@ class CommandCenterWindow(Gtk.ApplicationWindow):
                 p_copy = dict(p)
                 p_copy["is_running"] = is_running
                 combined.append(p_copy)
+                if old_states.get(p.get("id")) != is_running:
+                    changed = True
                 
+            if len(self.unified_items) != len(combined):
+                changed = True
+
             self.unified_items = combined
             total_cnt = len(combined)
             stopped_cnt = total_cnt - running_cnt
             stacks_cnt = len(self.proj_mgr.get_stacks())
             
-            GLib.idle_add(lambda: self.stat_running.set_label(f"● {running_cnt} Running"))
-            GLib.idle_add(lambda: self.stat_stopped.set_label(f"○ {stopped_cnt} Stopped"))
-            GLib.idle_add(lambda: self.stat_total.set_label(f"{total_cnt} Services"))
-            GLib.idle_add(self.render_view)
-            GLib.idle_add(lambda: self.set_status(f"✓ Ready • {running_cnt} of {total_cnt} services active across {stacks_cnt} groups"))
+            def update_ui():
+                self.stat_running.set_label(f"● {running_cnt} Running")
+                self.stat_stopped.set_label(f"○ {stopped_cnt} Stopped")
+                self.stat_total.set_label(f"{total_cnt} Services")
+                if changed or not silent:
+                    self.render_view()
+                if not silent or changed:
+                    self.set_status(f"✓ Ready • {running_cnt} of {total_cnt} services active across {stacks_cnt} groups")
+
+            GLib.idle_add(update_ui)
             
         threading.Thread(target=worker, daemon=True).start()
 
