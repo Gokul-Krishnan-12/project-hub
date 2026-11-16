@@ -59,7 +59,7 @@ DEFAULT_PROJECTS = [
         "path": "~/projects/api",
         "url": "http://localhost:8000/docs",
         "run_cmd": "npm run dev",
-        "stop_cmd": "pkill -f 'node'",
+        "stop_cmd": "fuser -k 8000/tcp || pkill -f 'projects/api'",
         "build_cmd": "npm run build",
         "desc": "REST API Service",
         "open_vscode": False
@@ -793,6 +793,16 @@ class ProjectManager:
 
             # 2. Run stop command
             actual_cmd = cmd_str
+            # Safeguard: Never execute blanket 'pkill -f node' because it kills VS Code's internal Pty Host,
+            # extension host, and terminals. Scope it strictly to this project's port or directory.
+            if actual_cmd.strip() in ["pkill -f node", "pkill -f 'node'", "pkill -f \"node\""]:
+                proj = next((p for p in self.projects if p.get("id") == proj_id), None)
+                port = self.extract_port(proj.get("url", "")) if proj else None
+                if port:
+                    actual_cmd = f"fuser -k {port}/tcp"
+                elif cwd:
+                    actual_cmd = f"pkill -f '{cwd}'"
+
             if cmd_str.startswith("./") and cwd:
                 script_file = Path(cwd) / cmd_str[2:].split()[0]
                 if not script_file.exists():
